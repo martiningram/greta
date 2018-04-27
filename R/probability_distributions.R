@@ -236,11 +236,35 @@ poisson_distribution <- R6Class (
       # add the nodes as children and parameters
       dim <- check_dims(lambda, target_dim = dim)
       super$initialize('poisson', dim, discrete = TRUE)
+      # If lambda was obtained through an exponentiation, we can keep its log
+      # version around as a representation.
+      if (lambda$node$operation_name == 'exp') {
+        children <- lambda$node$children
+        stopifnot(length(children) == 1)
+        log_rate <- children[[1]]
+        lambda$node$representations$log_rate <- log_rate
+      }      
       self$add_parameter(lambda, 'lambda')
+    },
+    
+    # fetch the tensors for the parameter, using the log rate if available
+    tf_fetch_parameters = function (dag) {
+      log_rate <- self$parameters$lambda$representations$log_rate
+      if (!is.null(log_rate))
+        lambda <- dag$tf_name(log_rate)
+      # fetch tensors
+      list('lambda' = get(lambda, envir = dag$tf_environment))
     },
 
     tf_distrib = function (parameters) {
-      tf$contrib$distributions$Poisson(rate = parameters$lambda)
+      log_rate <- self$parameters$lambda$representations$log_rate
+      if (is.null(log_rate)) {
+        # Use the normal rate
+        tf$contrib$distributions$Poisson(rate = parameters$lambda)
+      } else {
+        # Use the log rate
+        tf$contrib$distributions$Poisson(log_rate = parameters$lambda)
+      }
     },
 
     # no CDF for discrete distributions
