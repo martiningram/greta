@@ -12,8 +12,8 @@ stashed_samples()
 mcmc(model, sampler = hmc(), n_samples = 1000, thin = 1, warmup = 100,
   chains = 1, verbose = TRUE, pb_update = 10, initial_values = NULL)
 
-opt(model, method = c("adagrad"), max_iterations = 100, tolerance = 1e-06,
-  control = list(), initial_values = NULL)
+opt(model, optimiser = adagrad(), max_iterations = 100, tolerance = 1e-06,
+  initial_values = NULL)
 }
 \arguments{
 \item{model}{greta_model object}
@@ -40,9 +40,6 @@ tunes sampler hyperparameters.}
 chains) of initial values for the free parameters in the model. These will
 be used as the starting point for sampling/optimisation.}
 
-\item{method}{method used to optimise values. Currently only \code{adagrad}
-is available}
-
 \item{max_iterations}{the maximum number of iterations before giving up}
 
 \item{tolerance}{the numerical tolerance for the solution, the optimiser
@@ -51,6 +48,9 @@ successive iterations drops below this level}
 
 \item{control}{an optional named list of hyperparameters and options to
 control behaviour of the sampler or optimiser. See Details.}
+
+\item{method}{method used to optimise values. Currently only \code{adagrad}
+is available}
 }
 \value{
 \code{mcmc} & \code{stashed_samples} - an \code{mcmc.list} object
@@ -94,12 +94,7 @@ For \code{mcmc()} if \code{verbose = TRUE}, the progress bar shows
   sampling.
 
 Currently, the only implemented optimisation algorithm is Adagrad
-  (\code{method = "adagrad"}). The \code{control} argument can be used to
-  specify the optimiser hyperparameters: \code{learning_rate} (default 0.8),
-  \code{initial_accumulator_value} (default 0.1) and \code{use_locking}
-  (default \code{TRUE}). The are passed directly to TensorFlow's optimisers,
-  see \href{https://www.tensorflow.org/api_docs/python/tf/train}{the
-  TensorFlow docs} for more information
+  (\code{optimiser = adagrad()}).
 }
 \examples{
 \dontrun{

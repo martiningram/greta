@@ -166,6 +166,80 @@ inference <- R6Class(
   )
 )
 
+# Base optimiser class
+optimiser <- R6Class(
+  "optimiser",
+  inherit = inference,
+  public = list(
+    max_iterations = 100,
+    tolerance = 1e-6,
+    run_step = function() {
+      stop('This function has to be implemented in a subclass!')
+    },
+    optimise = function() {
+      diff <- old_obj <- Inf
+      it <- 0
+      while (it < self$max_iterations & diff > self$tolerance) {
+        it <- it + 1
+        obj <- self$run_step()
+        diff <- abs(old_obj - obj)
+        old_obj <- obj
+      }
+
+      # Fetch the final values
+      # TODO: Maybe make this a little bit neater; not ideal that we have to
+      # send the free state first.
+      tf_run <- self$model$dag$tf_run
+      final_free_state <- tf_run(sess$run(free_state))
+      self$model$dag$send_parameters(final_free_state)
+
+      return(list('convergence' = ifelse(it < self$max_iterations, 0, 1),
+                  'iterations' = it,
+                  'par' = self$model$dag$trace_values(),
+                  'value' = obj))
+    }
+  )
+)
+
+# The adagrad optimiser
+adagrad_optimiser <- R6Class(
+  "adagrad_optimiser",
+  inherit = optimiser,
+  public = list(
+
+    parameters = list(learning_rate = 0.8, 
+                      initial_accumulator_value = 0.1,
+                      use_locking = TRUE),
+
+    initialize = function (initial_values, model, parameters = list()) {
+
+      super$initialize(initial_values = initial_values,
+                       model = model,
+                       parameters = parameters)
+
+      # get the tensorflow environment
+      tfe <- self$model$dag$tf_environment
+      on_graph <- self$model$dag$on_graph
+      tf_run <- self$model$dag$tf_run
+
+      # Initialise the optimiser
+      on_graph(tfe$optimiser <- do.call(tf$train$AdagradOptimizer, 
+                                        parameters))
+
+      tf_run(train <- optimiser$minimize(-joint_density))
+
+      # initialize the variables
+      tf_run(sess$run(tf$global_variables_initializer()))
+    },
+
+    run_step = function() {
+      tf_run <- self$model$dag$tf_run
+      tf_run(sess$run(train))
+      tf_run(sess$run(-joint_density))
+    }
+    )
+)
+
 #' @importFrom coda mcmc mcmc.list
 sampler <- R6Class(
   "sampler",

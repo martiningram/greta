@@ -254,13 +254,7 @@ prep_initials <- function (initial_values, n_chains) {
 #'   successive iterations drops below this level
 #'
 #' @details Currently, the only implemented optimisation algorithm is Adagrad
-#'   (\code{method = "adagrad"}). The \code{control} argument can be used to
-#'   specify the optimiser hyperparameters: \code{learning_rate} (default 0.8),
-#'   \code{initial_accumulator_value} (default 0.1) and \code{use_locking}
-#'   (default \code{TRUE}). The are passed directly to TensorFlow's optimisers,
-#'   see \href{https://www.tensorflow.org/api_docs/python/tf/train}{the
-#'   TensorFlow docs} for more information
-#'
+#'   (\code{optimiser = adagrad()}). 
 #' @return \code{opt} - a list containing the following named elements:
 #'   \itemize{ \item{par}{the best set of parameters found} \item{value}{the log
 #'   joint density of the model at the parameters par} \item{iterations}{the
@@ -274,74 +268,18 @@ prep_initials <- function (initial_values, n_chains) {
 #' opt_res <- opt(m)
 #' }
 opt <- function (model,
-                  method = c("adagrad"),
-                  max_iterations = 100,
-                  tolerance = 1e-6,
-                  control = list(),
-                  initial_values = NULL) {
+                 optimiser = adagrad(),
+                 max_iterations = 100,
+                 tolerance = 1e-6,
+                 initial_values = NULL) {
 
-  # mock up some names to avoid CRAN-check note
-  optimiser <- joint_density <- sess <- NULL
-
-  # get the tensorflow environment
-  tfe <- model$dag$tf_environment
-  on_graph <- model$dag$on_graph
-  tf_run <- model$dag$tf_run
-
-  # get the method
-  method <- match.arg(method)
-  optimise_fun <- switch (method,
-                          adagrad = tf$train$AdagradOptimizer)
-
-  # default control options
-  con <- switch (method,
-                 adagrad = list(learning_rate = 0.8,
-                                initial_accumulator_value = 0.1,
-                                use_locking = TRUE))
-
-  # update them with user overrides
-  con[names(control)] <- control
-
-  # set up optimiser
-  on_graph(tfe$optimiser <- do.call(optimise_fun, con))
-  tf_run(train <- optimiser$minimize(-joint_density))
-
-  # random initial values if unspecified
-  if (is.null(initial_values)) {
-    initial_values <- model$dag$example_parameters()
-    initial_values[] <- rnorm(length(initial_values))
-  }
-
-  # initialize the variables, then set the ones we care about
-  tf_run(sess$run(tf$global_variables_initializer()))
-  parameters <- relist_tf(initial_values, model$dag$parameters_example)
-
-  for (i in seq_along(parameters)) {
-    variable_name <- paste0(names(parameters)[i], '_free')
-    vble <- tfe[[variable_name]]
-    on_graph( init <- tf$constant(parameters[[i]],
-                                  shape = vble$shape,
-                                  dtype = tf_float()))
-    . <- on_graph(tfe$sess$run(vble$assign(init)))
-  }
-
-  diff <- old_obj <- Inf
-  it <- 0
-
-  while (it < max_iterations & diff > tolerance) {
-    it <- it + 1
-    tf_run(sess$run(train))
-    obj <- tf_run(sess$run(-joint_density))
-    diff <- abs(old_obj - obj)
-    old_obj <- obj
-  }
-
-  list(par = model$dag$trace_values(),
-       value = tf_run(sess$run(joint_density)),
-       iterations = it,
-       convergence = ifelse(it < max_iterations, 0, 1))
-
+  # Build the "sampler"
+  sampler <- build_sampler(initial_values, optimiser, model)
+  sampler$optimise()
 }
 
 inference_module <- module(dag_class,
                            progress_bar = progress_bar_module)
+
+
+
