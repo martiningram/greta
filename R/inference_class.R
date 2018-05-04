@@ -7,6 +7,9 @@ inference <- R6Class(
 
     model = NULL,
 
+    # RNG seed
+    seed = 1,
+
     # size and current value of the free state
     n_free = 1L,
     free_state = 0,
@@ -27,14 +30,25 @@ inference <- R6Class(
     traced_values = matrix(0),
 
     # where this is in the run
-    initialize = function (initial_values, model, parameters = list()) {
+    initialize = function (initial_values,
+                           model,
+                           parameters = list(),
+                           seed = get_seed()) {
 
       self$parameters <- parameters
       self$model <- model
       self$n_free <- length(model$dag$example_parameters())
       self$free_state <- self$initial_values(initial_values)
       self$n_traced <- length(model$dag$trace_values(self$free_state))
+      self$seed <- seed
 
+    },
+
+    # set RNG seed for a tensorflow graph. Must be done before definition of a
+    # random tensor
+    set_tf_seed = function () {
+      dag <- self$model$dag
+      dag$tf_environment$rng_seed <- self$seed
     },
 
     get_feed_dict = function() {
@@ -77,7 +91,7 @@ inference <- R6Class(
         attempts <- 1
         while (!valid & attempts < 20) {
 
-          initial_values <- rnorm(self$n_free, 0, 0.5)
+          initial_values <- rnorm(self$n_free, 0, 0.1)
 
           # test validity of values
           valid <- self$valid_parameters(initial_values)
@@ -259,13 +273,20 @@ sampler <- R6Class(
   inherit = inference,
   public = list(
 
-    acceptance_rate = 0,
-    numerical_rejections = 0,
+    # sampler information
     chain_number = 1,
     n_chains = 1,
+    numerical_rejections = 0,
 
-    # how often to tune during warmup
-    tuning_interval = 5,
+    # tuning information
+    mean_accept_stat = 0.5,
+    sum_epsilon_trace = NULL,
+    hbar = 0,
+    log_epsilon_bar = 0,
+    tuning_interval = 3,
+
+    # sampler kernel information
+    parameters = list(),
 
     run_chain = function (n_samples, thin, warmup, verbose, pb_update) {
 
@@ -375,235 +396,6 @@ sampler <- R6Class(
 
     },
 
-    # by default, samplers have an empty tuning method
-    tune = function (iterations_completed, total_iterations) {
-      invisible(NULL)
-    }
-
-  )
-)
-
-hmc_sampler <- R6Class(
-  "hmc_sampler",
-  inherit = sampler,
-  public = list(
-
-    parameters = list(Lmin = 10,
-                      Lmax = 20,
-                      epsilon = 0.005,
-                      diag_sd = 1),
-
-    # tuning information for these variables
-    accept_trace = NULL,
-    sum_epsilon_trace = NULL,
-    last_burst_length = 100L,
-
-    initialize = function (initial_values, model, parameters = list()) {
-
-      # initialize the inference method
-      super$initialize(initial_values = initial_values,
-                       model = model,
-                       parameters = parameters)
-
-      # define the draws tensor on the tf graph
-      self$define_tf_hmc_draws(self$last_burst_length,
-                               define_variables = TRUE)
-
-    },
-
-    define_tf_hmc_draws = function (burst_length, define_variables = FALSE) {
-
-      dag <- self$model$dag
-      tfe <- dag$tf_environment
-
-      if (define_variables) {
-        # define tensors for the parameters
-        dag$tf_run(hmc_epsilon <- tf$placeholder(dtype = tf_float(),
-                                                 shape = list()))
-        dag$tf_run(hmc_L <- tf$placeholder(dtype = tf$int32,
-                                           shape = list()))
-
-        # and the sampler info
-        dag$tf_run(hmc_thin <- tf$placeholder(dtype = tf$int32,
-                                              shape = list()))
-        tfe$log_prob_fun <- dag$generate_log_prob_function(adjust = TRUE)
-      }
-
-      # change the burst length
-      tfe$hmc_burst_length <- as.integer(burst_length)
-
-      # define the whole draws tensor
-      dag$tf_run(
-        hmc_all_draws <- tf$contrib$bayesflow$hmc$chain(
-          n_iterations = hmc_burst_length,
-          step_size = hmc_epsilon,
-          n_leapfrog_steps = hmc_L,
-          initial_x = tf$reshape(free_state, list(length(free_state))),
-          target_log_prob_fn = log_prob_fun,
-          event_dims = 0L)[[1]]
-      )
-
-      # define the thinned draws tensor
-      dag$tf_run(
-        hmc_thinned_draws <- tf$strided_slice(hmc_all_draws,
-                                              c(0L, 0L),
-                                              tf$constant(c(hmc_burst_length,
-                                                            ncol(hmc_all_draws))),
-                                              tf$stack(list(hmc_thin, 1L)))
-      )
-    },
-
-    run_burst = function (n_samples, thin) {
-      self$tf_run_burst(n_samples, thin)
-    },
-
-    # run a burst with tensorflow HMC
-    tf_run_burst = function (n_samples, thin) {
-
-      dag <- self$model$dag
-      tfe <- dag$tf_environment
-
-      # get parameters
-      Lmin <- self$parameters$Lmin
-      Lmax <- self$parameters$Lmax
-      L <- sample(seq(Lmin, Lmax), 1)
-      epsilon <- self$parameters$epsilon
-
-      # set up dict
-      tfe$hmc_values <- list(free_state = as.matrix(self$free_state),
-                             hmc_L = L,
-                             hmc_epsilon = epsilon,
-                             hmc_thin = thin)
-      dag$tf_run(hmc_dict <- do.call(dict, hmc_values))
-
-      # if the required burst length has changed, redefine the draws
-      if (n_samples != self$last_burst_length) {
-        self$define_tf_hmc_draws(n_samples)
-        self$last_burst_length <- n_samples
-      }
-
-      # run sampler
-      free_state_draws <- dag$tf_run(sess$run(hmc_thinned_draws,
-                                              feed_dict = hmc_dict))
-
-      # get required variables
-      self$last_burst_free_states <- free_state_draws
-      n_draws <- nrow(free_state_draws)
-      self$free_state <- free_state_draws[n_draws, ]
-
-      # was each sample an acceptance or a rejection?
-      accept_trace <- as.numeric(diff(free_state_draws[, 1]) != 0)
-      self$accept_trace <- c(self$accept_trace, accept_trace)
-
-    },
-
-    # run the sampler for n_samples (possibly thinning)
-    r_run_burst = function (n_samples, thin) {
-
-      self$last_burst_free_states <- matrix(NA, n_samples, self$n_free)
-
-      # unpack options
-      epsilon <- self$parameters$epsilon
-      diag_sd <- self$parameters$diag_sd
-      L <- seq(self$parameters$Lmin,
-               self$parameters$Lmax)
-
-      dag <- self$model$dag
-      n_free <- self$n_free
-      x <- self$free_state
-
-      # track acceptance and numerical rejections
-      accept_trace <- rep(0, n_samples)
-
-      # set initial location, log joint density and gradients
-      dag$send_parameters(x)
-      grad <- dag$gradients()
-      logprob <- dag$log_density()
-
-      # loop through iterations
-      for (i in 1:n_samples) {
-
-        # copy old state
-        x_old <- x
-        logprob_old <- logprob
-        grad_old <- grad
-        p <- p_old <- rnorm(n_free)
-
-        # start leapfrog steps
-        reject <- FALSE
-        n_steps <- ifelse(length(L) == 1, L,
-                          base::sample(L, 1))
-
-        for (l in seq_len(n_steps)) {
-
-          # step
-          p <- p + 0.5 * epsilon * grad * diag_sd
-          x <- x + epsilon * p * diag_sd
-
-          # send parameters
-          dag$send_parameters(x)
-          grad <- dag$gradients()
-
-          # check gradients are finite
-          if (any(!is.finite(grad))) {
-            reject <- TRUE
-            break()
-          }
-
-          p <- p + 0.5 * epsilon * grad * diag_sd
-
-        }
-
-        # if the step was bad, reject it out of hand
-        if (reject) {
-
-          self$numerical_rejections <- self$numerical_rejections + 1
-          x <- x_old
-          logprob <- logprob_old
-          grad <- grad_old
-
-        } else {
-
-          # otherwise do the Metropolis accept/reject step
-
-          # inner products
-          p_prod <- 0.5 * sum(p ^ 2)
-          p_prod_old <- 0.5 * sum(p_old ^ 2)
-
-          # acceptance ratio
-          logprob <- dag$log_density()
-          log_accept_ratio <- logprob - p_prod - logprob_old + p_prod_old
-          log_u <- log(runif(1))
-
-          if (log_u < log_accept_ratio) {
-
-            accept_trace[i] <- 1
-
-          } else {
-
-            # on rejection, reset all the parameters and push old parameters to
-            # the graph for the trace
-            x <- x_old
-            logprob <- logprob_old
-            grad <- grad_old
-
-          }
-
-        }
-
-        # store the values of the free state for this burst
-        if (i %% thin == 0) {
-          self$last_burst_free_states[i %/% thin, ] <- x
-        }
-
-
-      }
-
-      # assign the free state and tuning information at the end of this burst
-      self$free_state <- x
-      self$accept_trace <- c(self$accept_trace, accept_trace)
-
-    },
 
     # overall tuning method
     tune = function(iterations_completed, total_iterations) {
@@ -611,57 +403,43 @@ hmc_sampler <- R6Class(
       self$tune_diag_sd(iterations_completed, total_iterations)
     },
 
-    tune_epsilon = function (iterations_completed, total_iterations) {
+    tune_epsilon = function (iter, total) {
 
       # tuning periods for the tunable parameters (first 10%, last 60%)
       tuning_periods <- list(c(0, 0.1), c(0.4, 1))
 
       # whether we're tuning now
       tuning_now <- self$in_periods(tuning_periods,
-                                    iterations_completed,
-                                    total_iterations)
+                                    iter,
+                                    total)
 
       if (tuning_now) {
 
         # epsilon & tuning parameters
-        epsilon <- self$parameters$epsilon
-        accept_group <- 50
-        target_acceptance <- 0.651
+        target <- 0.651
         kappa <- 0.75
         gamma <- 0.1
+        t0 <- 10
+        mu <- log(t0 * 0.05)
 
-        # acceptance rate over the accept_group samples
-        start <- max(1, iterations_completed - accept_group)
-        end <- iterations_completed
-        accept_rate <- mean(self$accept_trace[start:end], na.rm = TRUE)
+        hbar <- self$hbar
+        log_epsilon_bar <- self$log_epsilon_bar
+        mean_accept_stat <- self$mean_accept_stat
 
-        # decrease the adaptation rate as we go
-        adapt_rate <- min(1, gamma * iterations_completed ^ (-kappa))
+        w1 <- 1 / (iter + t0)
+        hbar <- (1 - w1) * hbar + w1 * (target - mean_accept_stat)
+        log_epsilon <- mu - hbar * sqrt(iter) / gamma
+        w2 <- iter ^ -kappa
+        log_epsilon_bar <- w2 * log_epsilon + (1 - w2) * log_epsilon_bar
 
-        # shift epsilon in the right direction, making sure it never goes
-        # negative
-        neg_eps <- -(epsilon + sqrt(.Machine$double.eps))
-        adaptation <- adapt_rate * (accept_rate - target_acceptance)
-        new_epsilon <- epsilon + pmax(neg_eps, adaptation)
+        self$hbar <- hbar
+        self$log_epsilon_bar <- log_epsilon_bar
+        self$parameters$epsilon <- exp(log_epsilon)
 
-        # update it
-        self$parameters$epsilon <- new_epsilon
-
-        # keep track of the *sum of epsilon* in the second half of warmup so
-        # we can average properly later, accounting for different burst
-        # sizes
-        progress_fraction <- iterations_completed / total_iterations
-        if (progress_fraction > 0.5) {
-          self$sum_epsilon_trace <- c(self$epsilon_trace,
-                                      epsilon * accept_group)
-        }
-
-        # if this is the end of the warmup, get the averaged epsilon for the
-        # second half of the warmup and put it back in for the parameter
-        if (progress_fraction == 1) {
-          n_traced <- total_iterations / 2
-          final_epsilon <- self$sum_epsilon_trace / n_traced
-          self$parameters$epsilon <- final_epsilon
+        # if this is the end of the warmup, put the averaged epsilon back in for
+        # the parameter
+        if (iter == total) {
+          self$parameters$epsilon <- exp(log_epsilon_bar)
         }
 
       }
@@ -700,7 +478,164 @@ hmc_sampler <- R6Class(
 
       }
 
+    },
+
+    define_tf_draws = function () {
+
+      dag <- self$model$dag
+      tfe <- dag$tf_environment
+
+      self$set_tf_seed()
+
+      self$define_tf_kernel()
+
+      # and the sampler info
+      dag$tf_run(sampler_burst_length <- tf$placeholder(dtype = tf$int32))
+      dag$tf_run(sampler_thin <- tf$placeholder(dtype = tf$int32))
+
+      # define the whole draws tensor
+      dag$tf_run(
+        sampler_batch <- tfp$mcmc$sample_chain(
+          num_results = sampler_burst_length %/% sampler_thin,
+          current_state = tf$reshape(free_state, list(length(free_state))),
+          kernel = sampler_kernel,
+          num_burnin_steps = 0L,
+          num_steps_between_results = sampler_thin)
+      )
+
+    },
+
+    # run a burst of the sampler
+    run_burst = function (n_samples, thin) {
+
+      dag <- self$model$dag
+      tfe <- dag$tf_environment
+
+      # combine the sampler information with information on the sampler's tuning
+      # parameters, and make into a dict
+      sampler_values <- list(free_state = matrix(self$free_state),
+                             sampler_burst_length = as.integer(n_samples),
+                             sampler_thin = as.integer(thin))
+      tfe$sampler_values <- c(sampler_values,
+                              self$sampler_parameter_values())
+      dag$tf_run(sampler_dict <- do.call(dict, sampler_values))
+
+      # run sampler
+      batch_results <- dag$tf_run(sess$run(sampler_batch,
+                                           feed_dict = sampler_dict))
+
+      # get trace of free state
+      free_state_draws <- batch_results[[1]]
+      self$last_burst_free_states <- free_state_draws
+      n_draws <- nrow(free_state_draws)
+      self$free_state <- free_state_draws[n_draws, ]
+
+      # log acceptance probability
+      log_accept_stats <- batch_results[[2]]$log_accept_ratio
+      accept_stats_batch <- pmin(1, exp(log_accept_stats))
+      self$mean_accept_stat <- mean(accept_stats_batch, na.rm = TRUE)
+
+      # numerical rejections parameter sets
+      bad <- sum(!is.finite(log_accept_stats))
+      self$numerical_rejections <- self$numerical_rejections + bad
+
+    },
+
+    sampler_parameter_values = function () {
+
+      # random number of integration steps
+      self$parameters
+
     }
+
+  )
+)
+
+hmc_sampler <- R6Class(
+  "hmc_sampler",
+  inherit = sampler,
+  public = list(
+
+    parameters = list(Lmin = 10,
+                      Lmax = 20,
+                      epsilon = 0.005,
+                      diag_sd = 1),
+
+    initialize = function (initial_values,
+                           model,
+                           parameters = list(),
+                           seed) {
+
+      # initialize the inference method
+      super$initialize(initial_values = initial_values,
+                       model = model,
+                       parameters = parameters,
+                       seed = seed)
+
+      # duplicate diag_sd if needed
+      n_diag <- length(self$parameters$diag_sd)
+      n_parameters <- length(model$dag$example_parameters())
+      if (n_diag != n_parameters && n_parameters > 1) {
+        diag_sd <- rep(self$parameters$diag_sd[1], n_parameters)
+        self$parameters$diag_sd <- diag_sd
+      }
+
+      # define the draws tensor on the tf graph
+      tfe <- model$dag$tf_environment
+      if (!exists("hmc_batch", envir = tfe)) {
+        self$define_tf_draws()
+      }
+
+    },
+
+    define_tf_kernel = function () {
+
+      dag <- self$model$dag
+      tfe <- dag$tf_environment
+
+      # tensors for sampler parameters
+      dag$tf_run(hmc_epsilon <- tf$placeholder(dtype = tf_float()))
+      dag$tf_run(hmc_L <- tf$placeholder(dtype = tf$int32))
+
+      # need to pass in the value for this placeholder as a matrix (shape(n, 1))
+      dag$tf_run(hmc_diag_sd <- tf$placeholder(dtype = tf_float(),
+                                               shape = list(length(free_state), 1L)))
+
+      # but it step_sizes must be a vector (shape(n, )), so reshape it
+      dag$tf_run(hmc_step_sizes <- tf$reshape(hmc_epsilon * hmc_diag_sd,
+                                              shape = list(length(free_state))))
+
+      # log probability function
+      tfe$log_prob_fun <- dag$generate_log_prob_function(adjust = TRUE)
+
+      # build the kernel
+      dag$tf_run(
+        sampler_kernel <- tfp$mcmc$HamiltonianMonteCarlo(
+          target_log_prob_fn = log_prob_fun,
+          step_size = hmc_step_sizes,
+          num_leapfrog_steps = hmc_L,
+          seed = rng_seed)
+      )
+
+    },
+
+    sampler_parameter_values = function () {
+
+      # random number of integration steps
+      Lmin <- self$parameters$Lmin
+      Lmax <- self$parameters$Lmax
+      L <- sample(seq(Lmin, Lmax), 1)
+
+      epsilon <- self$parameters$epsilon
+      diag_sd <- matrix(self$parameters$diag_sd)
+
+      # return named list for replacing tensors
+      list(hmc_L = L,
+           hmc_epsilon = epsilon,
+           hmc_diag_sd = diag_sd)
+
+    }
+
 
   )
 )
