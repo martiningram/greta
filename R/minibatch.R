@@ -35,5 +35,9 @@ get_minibatch <- function(data_arrays, batch_size = 8) {
 
   batch <- lapply(data_arrays, function(x) from_first_dim(x, picked))
 
+  # TODO: Here, I may have to give the minibatches the correct greta array
+  # names...?
+  # names(batch) <- lapply(data_arrays, function(x), 
+
   batch
 }

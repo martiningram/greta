@@ -17,6 +17,8 @@ inference <- R6Class(
     parameters = list(),
     tuning_periods = list(),
 
+    minibatch_function = NULL,
+
     # free state values for the last burst
     last_burst_free_states = matrix(0),
     # all recorded free state values
@@ -32,6 +34,17 @@ inference <- R6Class(
       self$n_free <- length(model$dag$example_parameters())
       self$free_state <- self$initial_values(initial_values)
       self$n_traced <- length(model$dag$trace_values(self$free_state))
+
+    },
+
+    get_feed_dict = function() {
+
+      if (is.null(minibatch_function)) {
+        # For now, this just means we return an empty feed dict
+        return(list())
+      else {
+        return(minibatch_function())
+      }
 
     },
 
