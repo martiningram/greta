@@ -51,16 +51,16 @@ inference <- R6Class(
       dag$tf_environment$rng_seed <- self$seed
     },
 
-    get_feed_dict = function() {
+    # get_feed_dict = function() {
 
-      if (is.null(minibatch_function)) {
-        # For now, this just means we return an empty feed dict
-        return(list())
-      else {
-        return(minibatch_function())
-      }
+    #   if (is.null(minibatch_function)) {
+    #     # For now, this just means we return an empty feed dict
+    #     return(list())
+    #   else {
+    #     return(minibatch_function())
+    #   }
 
-    },
+    # },
 
     initial_values = function (user_specified) {
 
@@ -292,6 +292,11 @@ sampler <- R6Class(
 
       self$print_chain_number()
 
+      dag <- self$model$dag
+      # May have to do on graph or something
+      dag$tf_run(tensorboard_writer <- 
+        tf$summary$FileWriter(paste0('/tmp/greta_logs/', Sys.time(), '_', self$chain_number)))
+
       self$traced_free_state <- matrix(NA, 0, self$n_free)
       self$traced_values <- matrix(NA, 0, self$n_traced)
 
@@ -315,6 +320,7 @@ sampler <- R6Class(
 
         for (burst in seq_along(burst_lengths)) {
 
+          dag$tf_environment$cur_step <- completed_iterations[burst]
           self$run_burst(burst_lengths[burst], thin = thin)
           self$tune(completed_iterations[burst], warmup)
           self$trace(values = FALSE)
@@ -521,8 +527,12 @@ sampler <- R6Class(
       dag$tf_run(sampler_dict <- do.call(dict, sampler_values))
 
       # run sampler
-      batch_results <- dag$tf_run(sess$run(sampler_batch,
+      batch_results <- dag$tf_run(sess$run(sampler_batch, 
                                            feed_dict = sampler_dict))
+
+      dag$tf_run(summary_result <- sess$run(merged_summaries, feed_dict = sampler_dict))
+      dag$tf_run(tensorboard_writer$add_summary(summary_result, cur_step))
+      dag$tf_run(tensorboard_writer$flush())
 
       # get trace of free state
       free_state_draws <- batch_results[[1]]
@@ -561,6 +571,8 @@ hmc_sampler <- R6Class(
                       epsilon = 0.005,
                       diag_sd = 1),
 
+    current_burst = 0L,
+
     initialize = function (initial_values,
                            model,
                            parameters = list(),
@@ -596,6 +608,7 @@ hmc_sampler <- R6Class(
       # tensors for sampler parameters
       dag$tf_run(hmc_epsilon <- tf$placeholder(dtype = tf_float()))
       dag$tf_run(hmc_L <- tf$placeholder(dtype = tf$int32))
+      dag$tf_run(eps_summary <- tf$summary$scalar('epsilon', hmc_epsilon))
 
       # need to pass in the value for this placeholder as a matrix (shape(n, 1))
       dag$tf_run(hmc_diag_sd <- tf$placeholder(dtype = tf_float(),
@@ -604,9 +617,14 @@ hmc_sampler <- R6Class(
       # but it step_sizes must be a vector (shape(n, )), so reshape it
       dag$tf_run(hmc_step_sizes <- tf$reshape(hmc_epsilon * hmc_diag_sd,
                                               shape = list(length(free_state))))
+      dag$tf_run(step_size_summary <- tf$summary$histogram('step_sizes', 
+                                                           hmc_step_sizes))
 
       # log probability function
       tfe$log_prob_fun <- dag$generate_log_prob_function(adjust = TRUE)
+
+      dag$tf_run(merged_summaries <- 
+        tf$summary$merge(list(step_size_summary, eps_summary)))
 
       # build the kernel
       dag$tf_run(
