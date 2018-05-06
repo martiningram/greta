@@ -530,10 +530,6 @@ sampler <- R6Class(
       batch_results <- dag$tf_run(sess$run(sampler_batch, 
                                            feed_dict = sampler_dict))
 
-      dag$tf_run(summary_result <- sess$run(merged_summaries, feed_dict = sampler_dict))
-      dag$tf_run(tensorboard_writer$add_summary(summary_result, cur_step))
-      dag$tf_run(tensorboard_writer$flush())
-
       # get trace of free state
       free_state_draws <- batch_results[[1]]
       self$last_burst_free_states <- free_state_draws
@@ -544,6 +540,15 @@ sampler <- R6Class(
       log_accept_stats <- batch_results[[2]]$log_accept_ratio
       accept_stats_batch <- pmin(1, exp(log_accept_stats))
       self$mean_accept_stat <- mean(accept_stats_batch, na.rm = TRUE)
+
+      tfe$summary_values <- c(tfe$sampler_values, 
+                              list(accept_stat = self$mean_accept_stat))
+
+      dag$tf_run(summary_dict <- do.call(dict, summary_values))
+      dag$tf_run(summary_result <- sess$run(merged_summaries, 
+                                            feed_dict = summary_dict))
+      dag$tf_run(tensorboard_writer$add_summary(summary_result, cur_step))
+      dag$tf_run(tensorboard_writer$flush())
 
       # numerical rejections parameter sets
       bad <- sum(!is.finite(log_accept_stats))
@@ -620,11 +625,16 @@ hmc_sampler <- R6Class(
       dag$tf_run(step_size_summary <- tf$summary$histogram('step_sizes', 
                                                            hmc_step_sizes))
 
+      # Also add a placeholder & summary for the acceptance probability
+      dag$tf_run(accept_stat <- tf$placeholder(dtype = tf_float()))
+      dag$tf_run(accept_summary <- 
+        tf$summary$scalar('mean_acceptance', accept_stat))
+
       # log probability function
       tfe$log_prob_fun <- dag$generate_log_prob_function(adjust = TRUE)
 
       dag$tf_run(merged_summaries <- 
-        tf$summary$merge(list(step_size_summary, eps_summary)))
+        tf$summary$merge(list(step_size_summary, eps_summary, accept_summary)))
 
       # build the kernel
       dag$tf_run(
