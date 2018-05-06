@@ -20,6 +20,8 @@ inference <- R6Class(
     parameters = list(),
     tuning_periods = list(),
 
+    minibatch_function = NULL,
+
     # free state values for the last burst
     last_burst_free_states = matrix(0),
     # all recorded free state values
@@ -48,6 +50,17 @@ inference <- R6Class(
       dag <- self$model$dag
       dag$tf_environment$rng_seed <- self$seed
     },
+
+    # get_feed_dict = function() {
+
+    #   if (is.null(minibatch_function)) {
+    #     # For now, this just means we return an empty feed dict
+    #     return(list())
+    #   else {
+    #     return(minibatch_function())
+    #   }
+
+    # },
 
     initial_values = function (user_specified) {
 
@@ -180,6 +193,80 @@ inference <- R6Class(
   )
 )
 
+# Base optimiser class
+optimiser <- R6Class(
+  "optimiser",
+  inherit = inference,
+  public = list(
+    max_iterations = 100,
+    tolerance = 1e-6,
+    run_step = function() {
+      stop('This function has to be implemented in a subclass!')
+    },
+    optimise = function() {
+      diff <- old_obj <- Inf
+      it <- 0
+      while (it < self$max_iterations & diff > self$tolerance) {
+        it <- it + 1
+        obj <- self$run_step()
+        diff <- abs(old_obj - obj)
+        old_obj <- obj
+      }
+
+      # Fetch the final values
+      # TODO: Maybe make this a little bit neater; not ideal that we have to
+      # send the free state first.
+      tf_run <- self$model$dag$tf_run
+      final_free_state <- tf_run(sess$run(free_state))
+      self$model$dag$send_parameters(final_free_state)
+
+      return(list('convergence' = ifelse(it < self$max_iterations, 0, 1),
+                  'iterations' = it,
+                  'par' = self$model$dag$trace_values(),
+                  'value' = obj))
+    }
+  )
+)
+
+# The adagrad optimiser
+adagrad_optimiser <- R6Class(
+  "adagrad_optimiser",
+  inherit = optimiser,
+  public = list(
+
+    parameters = list(learning_rate = 0.8, 
+                      initial_accumulator_value = 0.1,
+                      use_locking = TRUE),
+
+    initialize = function (initial_values, model, parameters = list()) {
+
+      super$initialize(initial_values = initial_values,
+                       model = model,
+                       parameters = parameters)
+
+      # get the tensorflow environment
+      tfe <- self$model$dag$tf_environment
+      on_graph <- self$model$dag$on_graph
+      tf_run <- self$model$dag$tf_run
+
+      # Initialise the optimiser
+      on_graph(tfe$optimiser <- do.call(tf$train$AdagradOptimizer, 
+                                        parameters))
+
+      tf_run(train <- optimiser$minimize(-joint_density))
+
+      # initialize the variables
+      tf_run(sess$run(tf$global_variables_initializer()))
+    },
+
+    run_step = function() {
+      tf_run <- self$model$dag$tf_run
+      tf_run(sess$run(train))
+      tf_run(sess$run(-joint_density))
+    }
+    )
+)
+
 #' @importFrom coda mcmc mcmc.list
 sampler <- R6Class(
   "sampler",
@@ -207,6 +294,12 @@ sampler <- R6Class(
 
       self$print_chain_number()
 
+      dag <- self$model$dag
+
+      # May have to do on graph or something
+      dag$tf_run(tensorboard_writer <- 
+        tf$summary$FileWriter(paste0('/tmp/greta_logs/', Sys.time(), '_', self$chain_number)))
+
       self$traced_free_state <- matrix(NA, 0, self$n_free)
       self$traced_values <- matrix(NA, 0, self$n_traced)
 
@@ -230,6 +323,7 @@ sampler <- R6Class(
 
         for (burst in seq_along(burst_lengths)) {
 
+          dag$tf_environment$cur_step <- completed_iterations[burst]
           self$run_burst(burst_lengths[burst], thin = thin)
           self$tune(completed_iterations[burst], warmup)
           self$trace(values = FALSE)
@@ -331,6 +425,7 @@ sampler <- R6Class(
       if (tuning_now) {
 
         # epsilon & tuning parameters
+        target <- 0.651
         kappa <- 0.75
         gamma <- 0.1
         t0 <- 10
@@ -449,6 +544,15 @@ sampler <- R6Class(
       accept_stats_batch <- pmin(1, exp(log_accept_stats))
       self$mean_accept_stat <- mean(accept_stats_batch, na.rm = TRUE)
 
+      tfe$summary_values <- c(tfe$sampler_values, 
+                              list(accept_stat = self$mean_accept_stat))
+
+      dag$tf_run(summary_dict <- do.call(dict, summary_values))
+      dag$tf_run(summary_result <- sess$run(merged_summaries, 
+                                            feed_dict = summary_dict))
+      dag$tf_run(tensorboard_writer$add_summary(summary_result, cur_step))
+      dag$tf_run(tensorboard_writer$flush())
+
       # numerical rejections parameter sets
       bad <- sum(!is.finite(log_accept_stats))
       self$numerical_rejections <- self$numerical_rejections + bad
@@ -512,6 +616,7 @@ hmc_sampler <- R6Class(
       # tensors for sampler parameters
       dag$tf_run(hmc_epsilon <- tf$placeholder(dtype = tf_float()))
       dag$tf_run(hmc_L <- tf$placeholder(dtype = tf$int32))
+      dag$tf_run(eps_summary <- tf$summary$scalar('epsilon', hmc_epsilon))
 
       # need to pass in the value for this placeholder as a matrix (shape(n, 1))
       dag$tf_run(hmc_diag_sd <- tf$placeholder(dtype = tf_float(),
@@ -520,9 +625,21 @@ hmc_sampler <- R6Class(
       # but it step_sizes must be a vector (shape(n, )), so reshape it
       dag$tf_run(hmc_step_sizes <- tf$reshape(hmc_epsilon * (hmc_diag_sd / tf$reduce_sum(hmc_diag_sd)),
                                               shape = list(length(free_state))))
+      dag$tf_run(hmc_step_sizes <- tf$reshape(hmc_epsilon * hmc_diag_sd,
+                                              shape = list(length(free_state))))
+      dag$tf_run(step_size_summary <- tf$summary$histogram('step_sizes', 
+                                                           hmc_step_sizes))
+
+      # Also add a placeholder & summary for the acceptance probability
+      dag$tf_run(accept_stat <- tf$placeholder(dtype = tf_float()))
+      dag$tf_run(accept_summary <- 
+        tf$summary$scalar('mean_acceptance', accept_stat))
 
       # log probability function
       tfe$log_prob_fun <- dag$generate_log_prob_function(adjust = TRUE)
+
+      dag$tf_run(merged_summaries <- 
+        tf$summary$merge(list(step_size_summary, eps_summary, accept_summary)))
 
       # build the kernel
       dag$tf_run(
