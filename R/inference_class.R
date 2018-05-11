@@ -17,6 +17,9 @@ inference <- R6Class(
     # and of the traced values
     n_traced = 1L,
 
+    # Accumulated mean and variance
+    welford_accumulator = NULL,
+
     parameters = list(),
     tuning_periods = list(),
 
@@ -267,6 +270,51 @@ adagrad_optimiser <- R6Class(
     )
 )
 
+# FIXME: These should probably not live here -- where would they be moved, ideally?
+welford_step <- function(cur_values, new_value) {
+
+    count <- cur_values[['count']]
+    mean <- cur_values[['mean']]
+    m2 <- cur_values[['m2']]
+
+    count <- count + 1
+    delta <- new_value - mean
+    mean <- mean + delta / count
+    delta2 <- new_value - mean
+    m2 = m2 + delta * delta2
+
+    # Also calculate variance
+    if (count >= 2){
+        var <- m2 / (count - 1)
+    } else {
+        var <- NaN
+    }
+
+    return(list('count' = count, 
+                'mean' = mean, 
+                'm2' = m2,
+                'var' = var))
+}
+
+calculate_welford <- function(input_matrix, starting_welford = NULL) {
+
+    if (is.null(starting_welford)) {
+        cur_welford <- list('count' = 0,
+                            'mean' = 0,
+                            'm2' = 0,
+                            'var' = 0)
+    } else {
+        cur_welford <- starting_welford
+    }
+
+    for (i in 1:nrow(input_matrix)) {
+        cur_welford <- welford_step(cur_welford,
+                                    input_matrix[i, ])
+    }
+    return(cur_welford)
+
+}
+
 #' @importFrom coda mcmc mcmc.list
 sampler <- R6Class(
   "sampler",
@@ -326,7 +374,8 @@ sampler <- R6Class(
 
           dag$tf_environment$cur_step <- completed_iterations[burst]
           self$run_burst(burst_lengths[burst], thin = thin)
-          self$trace(values = FALSE)
+          # We want to avoid this:
+          # self$trace(values = FALSE)
           self$tune(completed_iterations[burst], warmup)
 
           if (verbose) {
@@ -468,17 +517,18 @@ sampler <- R6Class(
 
       if (tuning_now) {
 
-        samples <- self$traced_free_state
-        if (sum(!self$accept_history) > 0) {
-          samples <- samples[self$accept_history, , drop = FALSE]
-        }
-        n_accepted <- nrow(samples)
+        n_accepted <- sum(self$accept_history)
+
+        # Update the mean and variance estimates
+        self$welford_accumulator <-
+          calculate_welford(self$last_burst_free_states, 
+                            starting_welford = self$welford_accumulator)
 
         # provided there have been at least 5 acceptances in the warmup so far
         if (n_accepted > 5) {
 
           # get the sample posterior variance and shrink it
-          sample_var <- sample_variance(samples)
+          sample_var <- self$welford_accumulator$var
           shrinkage <- 1 / (n_accepted + 5)
           var_shrunk <- n_accepted * shrinkage * sample_var + 5e-3 * shrinkage
           self$parameters$diag_sd <- sqrt(var_shrunk)
