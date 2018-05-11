@@ -519,11 +519,6 @@ sampler <- R6Class(
 
         n_accepted <- sum(self$accept_history)
 
-        # Update the mean and variance estimates
-        self$welford_accumulator <-
-          calculate_welford(self$last_burst_free_states, 
-                            starting_welford = self$welford_accumulator)
-
         # provided there have been at least 5 acceptances in the warmup so far
         if (n_accepted > 5) {
 
@@ -587,6 +582,12 @@ sampler <- R6Class(
       # get trace of free state
       free_state_draws <- batch_results[[1]]
       self$last_burst_free_states <- free_state_draws
+
+      # Update the mean and variance estimates
+      self$welford_accumulator <-
+        calculate_welford(self$last_burst_free_states, 
+                          starting_welford = self$welford_accumulator)
+
       n_draws <- nrow(free_state_draws)
       self$free_state <- free_state_draws[n_draws, ]
 
