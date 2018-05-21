@@ -581,6 +581,10 @@ sampler <- R6Class(
 
       # get trace of free state
       free_state_draws <- batch_results[[1]]
+
+      # Compute progress from last free state to first new one
+      progress <- sum((free_state_draws[1, ] -
+        (self$last_burst_free_states[nrow(self$last_burst_free_states), ]))^2)
       self$last_burst_free_states <- free_state_draws
 
       # Update the mean and variance estimates
@@ -599,7 +603,8 @@ sampler <- R6Class(
       self$mean_accept_stat <- mean(accept_stats_batch, na.rm = TRUE)
 
       tfe$summary_values <- c(tfe$sampler_values, 
-                              list(accept_stat = self$mean_accept_stat))
+                              list(accept_stat = self$mean_accept_stat,
+                                   square_distance = progress))
 
       dag$tf_run(summary_dict <- do.call(dict, summary_values))
       dag$tf_run(summary_result <- sess$run(merged_summaries, 
@@ -689,11 +694,17 @@ hmc_sampler <- R6Class(
       dag$tf_run(accept_summary <- 
         tf$summary$scalar('mean_acceptance', accept_stat))
 
+      # Also log the sampler's progress
+      dag$tf_run(square_distance <- tf$placeholder(dtype = tf_float()))
+      dag$tf_run(square_dist_summary <-
+        tf$summary$scalar('square_distance', square_distance))
+
       # log probability function
       tfe$log_prob_fun <- dag$generate_log_prob_function(adjust = TRUE)
 
       dag$tf_run(merged_summaries <- 
-        tf$summary$merge(list(step_size_summary, eps_summary, accept_summary)))
+        tf$summary$merge(list(step_size_summary, eps_summary, accept_summary,
+                              square_dist_summary)))
 
       # build the kernel
       dag$tf_run(
