@@ -50,7 +50,8 @@ Imports:
     reticulate,
     progress,
     coda,
-    methods
+    methods,
+    gpexp
 Suggests:
     knitr,
     rmarkdown,
