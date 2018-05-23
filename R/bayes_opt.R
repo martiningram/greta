@@ -4,8 +4,8 @@ compute_gp <- function(x, y, x_to_predict, sigma) {
   sigma_inv <- diag(1 / sigma, 1, 1)
   k_fun <- function (x1, x2) ard_kernel(x1, x2, sigma_inv)
 
-  prediction <- predict_points(as.matrix(x), to_predict, sqrt(0.1),
-                               as.matrix(y), k_fun)
+  prediction <- predict_points(as.matrix(x), x_to_predict, sqrt(0.1),
+                               as.matrix(y), k_fun, mean_centre = FALSE)
 
   return(prediction)
 }
@@ -20,7 +20,7 @@ compute_beta <- function(i, d, delta = 0.1) {
 compute_u <- function(scaled_means, covariances, beta, p_i) {
   # Compute u using the UCB acquisition function
   sigmas <- sqrt(diag(covariances))
-  return(scaled_means - p_i * sqrt(beta) * sigmas)
+  return(scaled_means + p_i * sqrt(beta) * sigmas)
 }
 
 initialise_data <- function() {
@@ -56,7 +56,7 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 1,
     data$r <- c(r)
   } else {
     max_r <- max(data$r)
-    if (r > data$max_r) {
+    if (r > max_r) {
       data$s <- alpha / r
     }
     # Update the data
@@ -71,10 +71,10 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 1,
   if (u < p_i) {
     # Choose a new gamma
     # First, fit the GP to our data
-    gp_results <- compute_gp(data$gamma, data$r)
+    gp_results <- compute_gp(data$gamma, data$r, to_predict, sigma)
 
     # Scale the means using s
-    scaled_means <- gp_results$mean * s
+    scaled_means <- gp_results$mean * data$s
 
     # Compute beta
     beta <- compute_beta(data$i, d)
