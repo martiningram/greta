@@ -1,10 +1,10 @@
 #' @importFrom gpexp predict_points ard_kernel
-compute_gp <- function(x, y, x_to_predict, sigma) {
+compute_gp <- function(x, y, x_to_predict, sigma, obs_var = 0.1) {
 
   sigma_inv <- diag(1 / sigma, 1, 1)
   k_fun <- function (x1, x2) ard_kernel(x1, x2, sigma_inv)
 
-  prediction <- predict_points(as.matrix(x), x_to_predict, sqrt(0.1),
+  prediction <- predict_points(as.matrix(x), x_to_predict, sqrt(obs_var),
                                as.matrix(y), k_fun, mean_centre = FALSE)
 
   return(prediction)
@@ -23,7 +23,7 @@ compute_u <- function(scaled_means, covariances, beta, p_i) {
   return(scaled_means + p_i * sqrt(beta) * sigmas)
 }
 
-initialise_data <- function() {
+initialise_tuning_data <- function() {
 
   initial_data <- list('i' = 1,
                        'r' = NULL,
@@ -34,6 +34,7 @@ initialise_data <- function() {
 
 }
 
+#' @importFrom gpexp plot_gp
 opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 1,
                      max_L = 200, kappa = 0.2) {
   # Gamma is the current setting of the hyperparameters; a column vector
@@ -51,30 +52,42 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 1,
     # This is, by definition, the scaling
     # TODO: Think about whether this really makes sense
     max_r <- r
-    data$s <- alpha / r
     data$gamma <- matrix(gamma, nrow = 1)
     data$r <- c(r)
   } else {
     max_r <- max(data$r)
-    if (r > max_r) {
-      data$s <- alpha / r
-    }
     # Update the data
     data$gamma <- rbind(data$gamma, gamma)
     data$r <- c(data$r, r)
   }
 
+  if (r >= max_r) {
+    if (r > 0) {
+      data$s <- alpha / r
+    } else {
+      # Avoid dividing by zero
+      data$s <- 1
+    }
+  }
+
   u <- runif(1)
   p_i <- max(data$i - k + 1, 1)^(-0.5)
   sigma <- (kappa * (max_L - min_L))^2
+  obs_var <- 0.1 # Observation noise TODO: Check!
 
   if (u < p_i) {
     # Choose a new gamma
     # First, fit the GP to our data
-    gp_results <- compute_gp(data$gamma, data$r, to_predict, sigma)
+    gp_results <- compute_gp(data$gamma, data$r, to_predict, sigma, 
+                             obs_var = obs_var)
 
     # Scale the means using s
     scaled_means <- gp_results$mean * data$s
+
+    # Out of interest, plot the gp
+    plot_gp(to_predict, scaled_means, gp_results$cov, sqrt(obs_var), 
+            x_train = data$gamma, y_train = data$r * data$s,
+            save_to = paste0('/tmp/gp_plot_', data$i, '.png'))
 
     # Compute beta
     beta <- compute_beta(data$i, d)

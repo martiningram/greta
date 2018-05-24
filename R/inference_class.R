@@ -332,6 +332,9 @@ sampler <- R6Class(
     hbar = 0,
     log_epsilon_bar = 0,
     tuning_interval = 3,
+    mean_square_distance = NULL,
+    # TODO: Should this be somewhere else?
+    bayes_opt_tuning_data = NULL,
 
     accept_target = 0.5,
     accept_history = vector(),
@@ -460,12 +463,14 @@ sampler <- R6Class(
     tune = function(iterations_completed, total_iterations) {
       self$tune_epsilon(iterations_completed, total_iterations)
       self$tune_diag_sd(iterations_completed, total_iterations)
+      #self$tune_L(iterations_completed, total_iterations)
     },
 
     tune_epsilon = function (iter, total) {
 
-      # tuning periods for the tunable parameters (first 10%, last 60%)
-      tuning_periods <- list(c(0, 0.1), c(0.4, 1))
+      # tuning periods for the tunable parameters (first 10%, then 30% after
+      # diag sd)
+      tuning_periods <- list(c(0, 0.1), c(0.4, 0.7))
 
       # whether we're tuning now
       tuning_now <- self$in_periods(tuning_periods,
@@ -500,6 +505,40 @@ sampler <- R6Class(
         if (iter == total) {
           self$parameters$epsilon <- exp(log_epsilon_bar)
         }
+
+      }
+
+    },
+
+    tune_L = function (iter, total) {
+
+      tuning_periods <- list(c(0.7, 1.0))
+
+      tuning_now <- self$in_periods(tuning_periods,
+                                    iter,
+                                    total)
+
+      if (tuning_now) {
+
+        if (is.null(self$bayes_opt_tuning_data)) {
+          self$bayes_opt_tuning_data <- initialise_tuning_data()
+        }
+
+        print(self$parameters$Lmax)
+
+        cur_gamma <- self$parameters$Lmax
+        cur_reward <- self$mean_square_distance / sqrt(cur_gamma)
+
+        # Run an optimisation step
+        opt_results <- opt_step(cur_gamma, cur_reward, 
+                                self$bayes_opt_tuning_data)
+
+        print(opt_results$new_gamma)
+
+        # Update the gamma to the new gamma
+        self$parameters$Lmax <- opt_results$new_gamma
+        self$bayes_opt_tuning_data <- opt_results$data
+        print(paste('New Lmax is', opt_results$new_gamma))
 
       }
 
@@ -582,9 +621,16 @@ sampler <- R6Class(
       # get trace of free state
       free_state_draws <- batch_results[[1]]
 
-      # Compute progress from last free state to first new one
-      progress <- sum((free_state_draws[1, ] -
-        (self$last_burst_free_states[nrow(self$last_burst_free_states), ]))^2)
+      # Make a matrix containing the progress
+      state_with_last <- 
+        rbind(self$last_burst_free_states[nrow(self$last_burst_free_states), ],
+              free_state_draws)
+      differences <- diff(state_with_last)
+      squared_diffs <- differences^2
+      summed_square_diffs <- rowSums(squared_diffs)
+      progress <- mean(summed_square_diffs)
+      self$mean_square_distance <- progress
+
       self$last_burst_free_states <- free_state_draws
 
       # Update the mean and variance estimates
@@ -676,6 +722,7 @@ hmc_sampler <- R6Class(
       dag$tf_run(hmc_epsilon <- tf$placeholder(dtype = tf_float()))
       dag$tf_run(hmc_L <- tf$placeholder(dtype = tf$int32))
       dag$tf_run(eps_summary <- tf$summary$scalar('epsilon', hmc_epsilon))
+      dag$tf_run(L_summary <- tf$summary$scalar('L', hmc_L))
 
       # need to pass in the value for this placeholder as a matrix (shape(n, 1))
       dag$tf_run(hmc_diag_sd <- tf$placeholder(dtype = tf_float(),
@@ -704,7 +751,7 @@ hmc_sampler <- R6Class(
 
       dag$tf_run(merged_summaries <- 
         tf$summary$merge(list(step_size_summary, eps_summary, accept_summary,
-                              square_dist_summary)))
+                              square_dist_summary, L_summary)))
 
       # build the kernel
       dag$tf_run(
@@ -733,7 +780,6 @@ hmc_sampler <- R6Class(
            hmc_diag_sd = diag_sd)
 
     }
-
 
   )
 )
