@@ -331,7 +331,7 @@ sampler <- R6Class(
     sum_epsilon_trace = NULL,
     hbar = 0,
     log_epsilon_bar = 0,
-    tuning_interval = 3,
+    tuning_interval = 6,
     mean_square_distance = NULL,
     # TODO: Should this be somewhere else?
     bayes_opt_tuning_data = NULL,
@@ -463,14 +463,14 @@ sampler <- R6Class(
     tune = function(iterations_completed, total_iterations) {
       self$tune_epsilon(iterations_completed, total_iterations)
       self$tune_diag_sd(iterations_completed, total_iterations)
-      #self$tune_L(iterations_completed, total_iterations)
+      self$tune_L(iterations_completed, total_iterations)
     },
 
     tune_epsilon = function (iter, total) {
 
       # tuning periods for the tunable parameters (first 10%, then 30% after
       # diag sd)
-      tuning_periods <- list(c(0, 0.1), c(0.4, 0.7))
+      tuning_periods <- list(c(0, 0.1))
 
       # whether we're tuning now
       tuning_now <- self$in_periods(tuning_periods,
@@ -512,7 +512,7 @@ sampler <- R6Class(
 
     tune_L = function (iter, total) {
 
-      tuning_periods <- list(c(0.7, 1.0))
+      tuning_periods <- list(c(0.4, 1))
 
       tuning_now <- self$in_periods(tuning_periods,
                                     iter,
@@ -524,22 +524,24 @@ sampler <- R6Class(
           self$bayes_opt_tuning_data <- initialise_tuning_data()
         }
 
-        print(self$parameters$Lmax)
+        cur_gamma <- c(self$parameters$Lmax, self$parameters$epsilon)
 
-        cur_gamma <- self$parameters$Lmax
-        cur_reward <- self$mean_square_distance / sqrt(cur_gamma)
+        print('Old gamma was:')
+        print(cur_gamma)
+
+        cur_reward <- self$mean_square_distance / sqrt(self$parameters$Lmax)
 
         # Run an optimisation step
         opt_results <- opt_step(cur_gamma, cur_reward, 
                                 self$bayes_opt_tuning_data)
 
+        print('New gamma is:')
         print(opt_results$new_gamma)
 
         # Update the gamma to the new gamma
-        self$parameters$Lmax <- opt_results$new_gamma
+        self$parameters$Lmax <- opt_results$new_gamma[1]
+        self$parameters$epsilon <- opt_results$new_gamma[2]
         self$bayes_opt_tuning_data <- opt_results$data
-        print(paste('New Lmax is', opt_results$new_gamma))
-
       }
 
     },
