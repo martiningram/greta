@@ -6,7 +6,8 @@ compute_gp <- function(x, y, x_to_predict, sigma, obs_var = 0.1) {
   k_fun <- function (x1, x2) ard_kernel(x1, x2, sigma_inv)
 
   prediction <- predict_points(as.matrix(x), x_to_predict, sqrt(obs_var),
-                               as.matrix(y), k_fun, mean_centre = FALSE)
+                               as.matrix(y), k_fun, mean_centre = FALSE,
+                               marginals_only = TRUE)
 
   return(prediction)
 }
@@ -37,7 +38,7 @@ initialise_tuning_data <- function() {
 
 #' @importFrom gpexp plot_gp
 opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 2,
-                     max_L = 200, min_eps = 0.0001, max_eps = 0.1, num_eps = 50,
+                     max_L = 200, min_eps = 0.0001, max_eps = 0.1, num_eps = 100,
                      kappa = 0.2) {
   # Gamma is the current setting of the hyperparameters; a column vector
   # r is the "reward" of the current step, assumed scalar
@@ -47,7 +48,7 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 2,
   # field "r", the vector of past rewards (i x 1)
   # field "s", the current scaling factor
   to_predict <- 
-    as.matrix(expand.grid(seq(min_L, max_L, 10), 
+    as.matrix(expand.grid(seq(min_L, max_L, 5), 
                           seq(min_eps, max_eps, length.out = num_eps)))
 
   d <- length(gamma)
@@ -107,15 +108,15 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 2,
     new_gamma <- to_predict[argmax_u, ]
 
     # Save this for debugging
-    saveRDS(list('gp_results' = gp_results,
-                 'data' = data,
-                 'to_predict' = to_predict,
-                 's' = data$s,
-                 'beta' = beta,
-                 'u' = u,
-                 'argmax_u' = argmax_u,
-                 'new_gamma' = new_gamma),
-            paste0('/tmp/debug_bayes_opt_', data$i, '.Rds'))
+    # saveRDS(list('gp_results' = gp_results,
+    #              'data' = data,
+    #              'to_predict' = to_predict,
+    #              's' = data$s,
+    #              'beta' = beta,
+    #              'u' = u,
+    #              'argmax_u' = argmax_u,
+    #              'new_gamma' = new_gamma),
+    #         paste0('/tmp/debug_bayes_opt_', data$i, '.Rds'))
 
   } else {
     # Keep current setting

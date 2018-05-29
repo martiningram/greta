@@ -693,7 +693,7 @@ hmc_sampler <- R6Class(
 
       if (parameters$ahmc == 'exclusive') {
         # Set to 10 at the moment. May change.
-        self$tuning_interval <- 10
+        self$tuning_interval <- 7
       }
 
       # initialize the inference method
