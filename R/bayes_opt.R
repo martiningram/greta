@@ -78,7 +78,7 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 2,
   p_i <- max(data$i - k + 1, 1)^(-0.5)
   sigma <- diag(c((kappa * (max_L - min_L))^2, 
                   (kappa * (max_eps - min_eps))^2))
-  obs_var <- 0.01 # Observation noise TODO: Check!
+  obs_var <- 0.1 # Observation noise TODO: Check!
 
   if (u < p_i) {
     # Choose a new gamma
@@ -125,4 +125,24 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 2,
   # Increment i
   data$i <- data$i + 1
   return(list('new_gamma' = new_gamma, 'data' = data))
+}
+
+compare_tuning <- function(model, n_warmup=1000, n_samples=1000) {
+
+  hybrid_tuning_draws <- 
+    greta::mcmc(model, sampler = hmc(Lmax=100, bayes_opt='hybrid'),
+                n_samples = n_samples, chains = 4, warmup = n_warmup)
+
+  exclusive_tuning_draws <- 
+    greta::mcmc(model, sampler = hmc(Lmax=100, bayes_opt='exclusive'),
+                n_samples = n_samples, chains = 4, warmup = n_warmup)
+
+  old_tuning_draws <- 
+    greta::mcmc(model, sampler = hmc(Lmax=100, bayes_opt='off'),
+                n_samples = n_samples, chains = 4, warmup = n_warmup)
+
+  together <- list('old_draws' = old_tuning_draws,
+                   'hybrid_draws' = hybrid_tuning_draws,
+                   'exclusive_draws' = exclusive_tuning_draws)
+
 }

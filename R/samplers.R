@@ -28,13 +28,16 @@ NULL
 hmc <- function (Lmin = 1,
                  Lmax = 100,
                  epsilon = 0.1,
-                 diag_sd = 1) {
+                 diag_sd = 1,
+                 bayes_opt_tuning = 'off') {
 
   obj <- list(parameters = list(Lmin = Lmin,
                                 Lmax = Lmax,
                                 epsilon = epsilon,
-                                diag_sd = diag_sd),
+                                diag_sd = diag_sd,
+                                ahmc = bayes_opt_tuning),
               class = hmc_sampler)
+
   class(obj) <- c("hmc sampler", "sampler")
   obj
 

@@ -331,7 +331,7 @@ sampler <- R6Class(
     sum_epsilon_trace = NULL,
     hbar = 0,
     log_epsilon_bar = 0,
-    tuning_interval = 6,
+    tuning_interval = 3,
     mean_square_distance = NULL,
     # TODO: Should this be somewhere else?
     bayes_opt_tuning_data = NULL,
@@ -461,16 +461,25 @@ sampler <- R6Class(
 
     # overall tuning method
     tune = function(iterations_completed, total_iterations) {
-      self$tune_epsilon(iterations_completed, total_iterations)
-      self$tune_diag_sd(iterations_completed, total_iterations)
-      self$tune_L(iterations_completed, total_iterations)
+      if (self$ahmc == 'hybrid') {
+        # We are using Bayesian optimisation to select the parameters
+        self$tune_epsilon(iterations_completed, total_iterations, 
+                          list(c(0, 0.2)))
+        self$tune_diag_sd(iterations_completed, total_iterations, 
+                          list(c(0.2, 0.5)))
+        self$tune_L(iterations_completed, total_iterations, 
+                    list(c(0.5, 1)))
+      } else if (self$ahmc == 'exclusive') {
+        self$tune_L(iterations_completed, total_iterations, list(c(0, 1)))
+      } else {
+        self$tune_epsilon(iterations_completed, total_iterations, 
+                          list(c(0, 0.1), c(0.4, 1.)))
+        self$tune_diag_sd(iterations_completed, total_iterations, 
+                          list(c(0.1, 0.4)))
+      }
     },
 
-    tune_epsilon = function (iter, total) {
-
-      # tuning periods for the tunable parameters (first 10%, then 30% after
-      # diag sd)
-      tuning_periods <- list(c(0, 0.1))
+    tune_epsilon = function (iter, total, tuning_periods) {
 
       # whether we're tuning now
       tuning_now <- self$in_periods(tuning_periods,
@@ -510,13 +519,9 @@ sampler <- R6Class(
 
     },
 
-    tune_L = function (iter, total) {
+    tune_L = function (iter, total, tuning_periods) {
 
-      tuning_periods <- list(c(0.4, 1))
-
-      tuning_now <- self$in_periods(tuning_periods,
-                                    iter,
-                                    total)
+      tuning_now <- self$in_periods(tuning_periods, iter, total)
 
       if (tuning_now) {
 
@@ -526,17 +531,11 @@ sampler <- R6Class(
 
         cur_gamma <- c(self$parameters$Lmax, self$parameters$epsilon)
 
-        print('Old gamma was:')
-        print(cur_gamma)
-
         cur_reward <- self$mean_square_distance / sqrt(self$parameters$Lmax)
 
         # Run an optimisation step
         opt_results <- opt_step(cur_gamma, cur_reward, 
                                 self$bayes_opt_tuning_data)
-
-        print('New gamma is:')
-        print(opt_results$new_gamma)
 
         # Update the gamma to the new gamma
         self$parameters$Lmax <- opt_results$new_gamma[1]
@@ -546,11 +545,8 @@ sampler <- R6Class(
 
     },
 
-    tune_diag_sd = function (iterations_completed, total_iterations) {
-
-      # when, during warmup, to tune this parameter (after epsilon, but stopping
-      # before halfway through)
-      tuning_periods <- list(c(0.1, 0.4))
+    tune_diag_sd = function (iterations_completed, total_iterations,
+                             tuning_periods) {
 
       tuning_now <- self$in_periods(tuning_periods,
                                     iterations_completed,
@@ -686,6 +682,8 @@ hmc_sampler <- R6Class(
                       epsilon = 0.005,
                       diag_sd = 1),
 
+    ahmc = FALSE,
+
     accept_target = 0.651,
 
     initialize = function (initial_values,
@@ -693,11 +691,18 @@ hmc_sampler <- R6Class(
                            parameters = list(),
                            seed) {
 
+      if (parameters$ahmc == 'exclusive') {
+        # Set to 10 at the moment. May change.
+        self$tuning_interval <- 10
+      }
+
       # initialize the inference method
       super$initialize(initial_values = initial_values,
                        model = model,
                        parameters = parameters,
                        seed = seed)
+
+      self$ahmc <- parameters$ahmc
 
       # duplicate diag_sd if needed
       n_diag <- length(self$parameters$diag_sd)
