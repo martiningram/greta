@@ -29,7 +29,9 @@ hmc <- function (Lmin = 1,
                  Lmax = 100,
                  epsilon = 0.1,
                  diag_sd = 1,
-                 bayes_opt_tuning = 'off') {
+                 bayes_opt_tuning = c('hybrid', 'exclusive', 'off')) {
+
+  bayes_opt_tuning <- match.arg(bayes_opt_tuning)
 
   obj <- list(parameters = list(Lmin = Lmin,
                                 Lmax = Lmax,

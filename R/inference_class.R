@@ -331,7 +331,7 @@ sampler <- R6Class(
     sum_epsilon_trace = NULL,
     hbar = 0,
     log_epsilon_bar = 0,
-    tuning_interval = 3,
+    tuning_interval = 10,
     mean_square_distance = NULL,
     # TODO: Should this be somewhere else?
     bayes_opt_tuning_data = NULL,
@@ -377,8 +377,6 @@ sampler <- R6Class(
 
           dag$tf_environment$cur_step <- completed_iterations[burst]
           self$run_burst(burst_lengths[burst], thin = thin)
-          # We want to avoid this:
-          # self$trace(values = FALSE)
           self$tune(completed_iterations[burst], warmup)
 
           if (verbose) {
@@ -447,8 +445,24 @@ sampler <- R6Class(
 
       if (warmup) {
 
-        # when to break to update tuning
-        tuning_points <- seq(0, n_samples, by = self$tuning_interval)
+        if (self$ahmc == 'hybrid') {
+          if (n_samples < 500) {
+            stop(paste('Hybrid tuning requires at least 500 warmup',
+                       'iterations; preferably 1000+.'))
+          }
+          # We'll have to sample at a tuning interval of 3 for the first half,
+          # then whatever it really is
+          first_half_tuning_points <- seq(0, 500, by = 3)
+
+          second_half_tuning_points <- 
+            seq(500, n_samples, by = self$tuning_interval)
+
+          tuning_points <- c(first_half_tuning_points, second_half_tuning_points)
+        } else {
+          # when to break to update tuning
+          tuning_points <- seq(0, n_samples, by = self$tuning_interval)
+        }
+
         changepoints <- c(changepoints, tuning_points)
 
       }
@@ -464,11 +478,11 @@ sampler <- R6Class(
       if (self$ahmc == 'hybrid') {
         # We are using Bayesian optimisation to select the parameters
         self$tune_epsilon(iterations_completed, total_iterations, 
-                          list(c(0, 0.2)))
+                          list(c(0, 200 / total_iterations)))
         self$tune_diag_sd(iterations_completed, total_iterations, 
-                          list(c(0.2, 0.5)))
-        self$tune_L(iterations_completed, total_iterations, 
-                    list(c(0.5, 1)))
+                          list(c(0.2, 300 / total_iterations)))
+        past <- ((200 + 300) / total_iterations)
+        self$tune_L(iterations_completed, total_iterations, list(c(past, 1)))
       } else if (self$ahmc == 'exclusive') {
         self$tune_L(iterations_completed, total_iterations, list(c(0, 1)))
       } else {
@@ -521,6 +535,14 @@ sampler <- R6Class(
 
     tune_L = function (iter, total, tuning_periods) {
 
+      # Set k depending on number of steps in tuning period
+      # Only support one period for now
+      stopifnot(length(tuning_periods) == 1)
+      periods <- tuning_periods[[1]]
+      l_tuning_steps <- (periods[2] - periods[1]) * total
+      k <- round(2. / 3. * (l_tuning_steps / self$tuning_interval), 
+                 digits = 0)
+
       tuning_now <- self$in_periods(tuning_periods, iter, total)
 
       if (tuning_now) {
@@ -534,8 +556,8 @@ sampler <- R6Class(
         cur_reward <- self$mean_square_distance / sqrt(self$parameters$Lmax)
 
         # Run an optimisation step
-        opt_results <- opt_step(cur_gamma, cur_reward, 
-                                self$bayes_opt_tuning_data)
+        opt_results <- opt_step(cur_gamma, cur_reward,
+                                self$bayes_opt_tuning_data, k = k)
 
         # Update the gamma to the new gamma
         self$parameters$Lmax <- opt_results$new_gamma[1]
@@ -736,8 +758,9 @@ hmc_sampler <- R6Class(
                                                shape = list(length(free_state), 1L)))
 
       # but it step_sizes must be a vector (shape(n, )), so reshape it
-      dag$tf_run(hmc_step_sizes <- tf$reshape(hmc_epsilon * (hmc_diag_sd / tf$reduce_sum(hmc_diag_sd)),
-                                              shape = list(length(free_state))))
+      dag$tf_run(hmc_step_sizes <- 
+        tf$reshape(hmc_epsilon * (hmc_diag_sd / tf$reduce_sum(hmc_diag_sd)),
+                   shape = list(length(free_state))))
       dag$tf_run(hmc_step_sizes <- tf$reshape(hmc_epsilon * hmc_diag_sd,
                                               shape = list(length(free_state))))
       dag$tf_run(step_size_summary <- tf$summary$histogram('step_sizes', 

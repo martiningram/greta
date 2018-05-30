@@ -128,14 +128,10 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 2,
   return(list('new_gamma' = new_gamma, 'data' = data))
 }
 
-compare_tuning <- function(model, n_warmup=1000, n_samples=1000) {
+compare_tuning <- function(model, n_warmup=1500, n_samples=1000) {
 
   hybrid_tuning_draws <- 
     greta::mcmc(model, sampler = hmc(Lmax=100, bayes_opt='hybrid'),
-                n_samples = n_samples, chains = 4, warmup = n_warmup)
-
-  exclusive_tuning_draws <- 
-    greta::mcmc(model, sampler = hmc(Lmax=100, bayes_opt='exclusive'),
                 n_samples = n_samples, chains = 4, warmup = n_warmup)
 
   old_tuning_draws <- 
@@ -143,7 +139,6 @@ compare_tuning <- function(model, n_warmup=1000, n_samples=1000) {
                 n_samples = n_samples, chains = 4, warmup = n_warmup)
 
   together <- list('old_draws' = old_tuning_draws,
-                   'hybrid_draws' = hybrid_tuning_draws,
-                   'exclusive_draws' = exclusive_tuning_draws)
+                   'hybrid_draws' = hybrid_tuning_draws)
 
 }
