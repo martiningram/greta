@@ -455,10 +455,10 @@ sampler <- R6Class(
       if (warmup) {
 
         if (self$ahmc == 'hybrid') {
-          if (n_samples < 500) {
-            stop(paste('Hybrid tuning requires at least 500 warmup',
-                       'iterations; preferably 1000+.'))
+          if (n_samples < 1000) {
+            stop(paste('Hybrid tuning requires at least 1000 warmup iterations.') 
           }
+
           # We'll have to sample at a tuning interval of 3 for the first half,
           # then whatever it really is
           first_half_tuning_points <- seq(0, 500, by = 3)
