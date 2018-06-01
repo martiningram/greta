@@ -22,6 +22,7 @@ inference <- R6Class(
 
     parameters = list(),
     tuning_periods = list(),
+    debug_info = list(),
 
     minibatch_function = NULL,
 
@@ -350,7 +351,8 @@ sampler <- R6Class(
 
       # May have to do on graph or something
       dag$tf_run(tensorboard_writer <- 
-        tf$summary$FileWriter(paste0('/tmp/greta_logs/', Sys.time(), '_', self$chain_number)))
+        tf$summary$FileWriter(paste0('/tmp/greta_logs/', Sys.time(), '_',
+                                     self$chain_number)))
 
       self$traced_free_state <- matrix(NA, 0, self$n_free)
       self$traced_values <- matrix(NA, 0, self$n_traced)
@@ -391,6 +393,14 @@ sampler <- R6Class(
 
       # scrub the free state trace
       self$traced_free_state <- matrix(NA, 0, self$n_free)
+
+      # reset the number of leapfrogs -- we don't really care what happens in
+      # warmup
+      self$debug_info$total_leapfrogs <- 0
+
+      # Record the final L(max) and eps used for sampling
+      self$debug_info$Lmax <- self$parameters$Lmax
+      self$debug_info$epsilon <- self$parameters$epsilon
 
       # main sampling
       if (verbose) {
@@ -540,8 +550,13 @@ sampler <- R6Class(
       stopifnot(length(tuning_periods) == 1)
       periods <- tuning_periods[[1]]
       l_tuning_steps <- (periods[2] - periods[1]) * total
+
+      # Set k relatively small so that we have some diminishing adaptation
       k <- round(2. / 3. * (l_tuning_steps / self$tuning_interval), 
                  digits = 0)
+
+      # If we are at the end of the warmup, pick the best parameters
+      finalise <- iter == total
 
       tuning_now <- self$in_periods(tuning_periods, iter, total)
 
@@ -557,7 +572,8 @@ sampler <- R6Class(
 
         # Run an optimisation step
         opt_results <- opt_step(cur_gamma, cur_reward,
-                                self$bayes_opt_tuning_data, k = k)
+                                self$bayes_opt_tuning_data, k = k, 
+                                finalise = finalise)
 
         # Update the gamma to the new gamma
         self$parameters$Lmax <- opt_results$new_gamma[1]
@@ -634,6 +650,10 @@ sampler <- R6Class(
                               self$sampler_parameter_values())
       dag$tf_run(sampler_dict <- do.call(dict, sampler_values))
 
+      # keep track of how many leapfrog steps we are performing
+      self$debug_info$total_leapfrogs <- self$debug_info$total_leapfrogs + 
+        (tfe$sampler_values[['hmc_L']] * n_samples)
+
       # run sampler
       batch_results <- dag$tf_run(sess$run(sampler_batch,
                                            feed_dict = sampler_dict))
@@ -705,6 +725,8 @@ hmc_sampler <- R6Class(
                       diag_sd = 1),
 
     ahmc = FALSE,
+
+    debug_info = list('total_leapfrogs' = 0),
 
     accept_target = 0.651,
 

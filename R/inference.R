@@ -36,6 +36,7 @@ stashed_samples <- function () {
     model_info <- new.env()
     model_info$raw_draws <- free_state_draws
     model_info$model <- samplers[[1]]$model
+    model_info$debug_info <- lapply(samplers, member, 'debug_info')
 
     # add the raw draws as an attribute
     attr(values_draws, "model_info") <- model_info

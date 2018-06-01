@@ -39,7 +39,7 @@ initialise_tuning_data <- function() {
 #' @importFrom gpexp plot_gp
 opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 2,
                      max_L = 200, min_eps = 0.0001, max_eps = 0.1, num_eps = 100,
-                     kappa = 0.2) {
+                     kappa = 0.2, finalise = FALSE) {
   # Gamma is the current setting of the hyperparameters; a column vector
   # r is the "reward" of the current step, assumed scalar
   # data is a list containing:
@@ -81,7 +81,20 @@ opt_step <- function(gamma, r, data, alpha = 4, k = 100, min_L = 2,
                   (kappa * (max_eps - min_eps))^2))
   obs_var <- 0.1 # Observation noise TODO: Check!
 
-  if (u < p_i) {
+  if (finalise) {
+    # Exploit the best parameters found.
+    gp_results <- compute_gp(data$gamma, data$r, to_predict, sigma, 
+                             obs_var = obs_var)
+
+    best <- which.max(gp_results$mean)
+
+    new_gamma <- to_predict[best, ]
+
+    print(sprintf('Finalising; setting eps to %f and Lmax to %f', new_gamma[2],
+                  new_gamma[1]))
+
+  } else if (u < p_i) {
+    
     # Choose a new gamma
     # First, fit the GP to our data
     gp_results <- compute_gp(data$gamma, data$r, to_predict, sigma, 
