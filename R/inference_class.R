@@ -334,7 +334,6 @@ sampler <- R6Class(
     log_epsilon_bar = 0,
     tuning_interval = 10,
     mean_square_distance = NULL,
-    # TODO: Should this be somewhere else?
     bayes_opt_tuning_data = NULL,
 
     accept_target = 0.5,
